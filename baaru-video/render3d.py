@@ -110,19 +110,19 @@ def build_scene(pct, samples):
         b3.uv_sphere(f'HillS{i}', m, None, (x, y, -r * 0.8), (r * 1.5, r, r), 48, 24)
 
     # 雲
-    m_cloud = b3.mat('Cloud', 'FFFFFF', rough=0.9, sheen=0.6, emit=0.35)
+    m_cloud = b3.mat('Cloud', 'FFFFFF', rough=0.9, sheen=0.6, emit=0.9)
     S['clouds'] = []
     rng = random.Random(5)
     for i in range(5):
         parts = [(-0.9, 0, 0, 0.7), (0, 0, 0.35, 0.95), (0.95, 0, 0.05, 0.75), (0.4, -0.2, -0.2, 0.6),
                  (-0.4, -0.2, -0.25, 0.6)]
-        c = blob_cluster(f'Cloud{i}', m_cloud, parts, (rng.uniform(-12, 12), 18, rng.uniform(3.2, 4.6)),
-                         rng.uniform(0.9, 1.4))
+        c = blob_cluster(f'Cloud{i}', m_cloud, parts, (rng.uniform(-12, 12), 18, rng.uniform(2.3, 3.2)),
+                         rng.uniform(0.7, 1.0))
         S['clouds'].append((c, rng.uniform(0.15, 0.35)))
 
     # 太陽
     m_sun = b3.mat('SunM', 'FFD54F', emit=2.5)
-    sun = b3.uv_sphere('SunDisc', m_sun, None, (8.0, 22, 5.6), (1.3, 0.3, 1.3))
+    sun = b3.uv_sphere('SunDisc', m_sun, None, (8.5, 22, 4.0), (1.1, 0.3, 1.1))
     S['sun'] = sun
 
     # お花
@@ -293,7 +293,7 @@ def apply_frame(S, f):
         z = ((t * b['sp'] + b['ph']) % 4.5) - 0.3
         b['o'].location = (b['x'] + 0.3 * math.sin(t * 0.7 + b['ph']), b['y'], z + 0.4)
     pulse = 1 + 0.05 * math.cos(f['beat'] * math.pi * 2) ** 8
-    S['sun'].scale = (1.3 * pulse, 0.3, 1.3 * pulse)
+    S['sun'].scale = (1.1 * pulse, 0.3, 1.1 * pulse)
     z, fx, fy, shake = f['cam']
     place_camera(S['cam'], z, fx, fy, shake, t)
 
