@@ -512,6 +512,7 @@ def dance_spin_jump(st, q):
     j = clamp((q - 1) / 2)
     st['hop'] = 170 * math.sin(math.pi * j)
     st['flip'] = math.cos(2 * math.pi * j) if 0 < j < 1 else 1
+    st['turn'] = 2 * math.pi * ease(j) if 0 < j < 1 else 0.0
     if abs(st['flip']) < 0.04:
         st['flip'] = 0.04 if st['flip'] >= 0 else -0.04
     if q < 1:
@@ -548,6 +549,7 @@ def dance_turn(st, b):
     """2拍ごとにうしろを向いて、また前を向く（ミニいないいないばぁ）."""
     ph = (b % 4) / 4
     st['flip'] = math.cos(2 * math.pi * ph)
+    st['turn'] = 2 * math.pi * ph
     if abs(st['flip']) < 0.04:
         st['flip'] = 0.04 if st['flip'] >= 0 else -0.04
     st['hop'] = 25 * abs(math.sin(math.pi * b))
