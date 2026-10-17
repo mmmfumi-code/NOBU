@@ -4,6 +4,7 @@ python3 make_video.py [out.mp4]
 キャラクター描画・音楽・効果音をすべてプログラムで生成し、ffmpeg で MP4 にする。
 """
 import math
+import os
 import random
 import subprocess
 import sys
@@ -11,6 +12,8 @@ import wave
 
 import cairo
 import numpy as np
+import pyopenjtalk
+from pyopenjtalk.htsengine import HTSEngine
 
 W, H = 1280, 720
 FPS = 30
@@ -565,6 +568,7 @@ def scene(t):
     bursts = []  # (x, y, age, big)
     flash = 0.0
     bush = None
+    cam = (1.0, 640, 400, 0.0)
 
     main = base_state()
     main['blink'] = blink_at(t)
@@ -584,6 +588,7 @@ def scene(t):
             main['ear'] = 0.4 * math.sin(beat * 3)
             main['face'] = 1
             if beat >= 8:
+                cam = peek_cam(beat - 8, 640)
                 texts.append(('いない いない…', 640, 140, 70 * ease_out_back((beat - 8) / 0.5),
                               hexc('FFFFFF'), hexc('8A6BC9'), 1.0))
         else:
@@ -591,6 +596,7 @@ def scene(t):
             main['y'] = GROUND
             peekaboo(main, 4 + qq)
             bush_y = 400 * ease((qq - 0.1) / 1.5)
+            cam = peek_cam(4 + qq, 640)
             bursts.append((640, GROUND - 200, qq * SPB, 1.0))
             flash = math.exp(-qq * 5)
             texts.append(('ばぁ！', 640, 130, 130 * ease_out_back(qq / 0.35),
@@ -614,6 +620,7 @@ def scene(t):
         prev = spots[n - 1] if n > 0 else 640
         main['x'] = prev
         peekaboo(main, p, x_from=prev, x_to=spots[n])
+        cam = peek_cam(p, spots[n])
         if p < 4:
             texts.append(('いない', 400, 130, 72 * ease_out_back(p / 0.4), hexc('FFFFFF'), hexc('8A6BC9'), 1))
             if p >= 2:
@@ -649,6 +656,7 @@ def scene(t):
         n = int(b // 8)
         p = b % 8
         order = [['pink'], ['mint'], ['purple'], ['pink', 'mint', 'purple']]
+        cam = peek_cam(p, [330, 950, 640, 640][n])
         cast = [('pink', 330, 210), ('mint', 950, 210), ('purple', 640, 300)]
         for i, (sch, x, size) in enumerate(cast):
             c = base_state(sch, x, size)
@@ -685,6 +693,7 @@ def scene(t):
                 c['mouth'] = 0.3
             else:
                 peekaboo(c, b - 8)
+                cam = peek_cam(b - 8, 640)
                 if b - 8 >= 4:
                     c['happy'] = 1
                     c['mouth'] = 0.7
@@ -702,7 +711,17 @@ def scene(t):
         fade = clamp((t - (DURATION - 1.2)) / 1.2)
         if fade > 0:
             texts.append(('__fade__', fade))
-    return beat, chars, texts, bursts, flash, bush
+    return beat, chars, texts, bursts, flash, bush, cam
+
+
+def peek_cam(p, x):
+    """かくれている間はじわじわ寄って、ばぁ！で戻りながらゆれる."""
+    if 2 <= p < 4:
+        return (1 + 0.12 * ease((p - 2) / 2), x, GROUND - 200, 0.0)
+    if 4 <= p < 6:
+        q = p - 4
+        return (1 + 0.12 * (1 - ease(q / 0.2)), x, GROUND - 200, 14 * math.exp(-q * 4))
+    return (1.0, x, GROUND - 200, 0.0)
 
 
 def draw_bush(ctx, offset):
@@ -732,7 +751,20 @@ def draw_bush(ctx, offset):
 def render_frame(surface, t):
     ctx = cairo.Context(surface)
     ctx.set_antialias(cairo.ANTIALIAS_BEST)
-    beat, chars, texts, bursts, flash, bush = scene(t)
+    beat, chars, texts, bursts, flash, bush, cam = scene(t)
+    fi = min(int(round(t * FPS)), MOUTH_ENV['purple'].size - 1) if MOUTH_ENV else 0
+    for c in chars:
+        if MOUTH_ENV and c['face'] > 0.3:
+            v = MOUTH_ENV[c['scheme']][fi]
+            c['mouth'] = max(c['mouth'], min(1.0, v * 1.3))
+    z, fx, fy, shake = cam
+    ctx.save()
+    if shake > 0.1:
+        z = max(z, 1 + 2.5 * shake / H)
+        ctx.translate(shake * math.sin(t * 61), shake * math.cos(t * 47))
+    ctx.translate(fx, fy)
+    ctx.scale(z, z)
+    ctx.translate(-fx, -fy)
     draw_background(ctx, t, beat, flash)
     draw_bubbles(ctx, t)
     for (x, y, age, big) in bursts:
@@ -740,6 +772,7 @@ def render_frame(surface, t):
     for c in sorted(chars, key=lambda c: c['size']):
         draw_baaru(ctx, c, t)
     draw_bush(ctx, bush)
+    ctx.restore()
     fade = 0
     for tx in texts:
         if tx[0] == '__fade__':
@@ -847,6 +880,166 @@ def boing():
     return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 6)
 
 
+def slide_up():
+    """ぴゅ〜ん（ジャンプ）."""
+    t = env_t(0.45)
+    f = 380 * 2 ** (2.2 * t / 0.45) * (1 + 0.03 * np.sin(2 * np.pi * 18 * t))
+    return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.sin(np.pi * t / 0.45) ** 0.5
+
+
+def squish(pitch=1.0):
+    """ぽよん（着地）."""
+    t = env_t(0.3)
+    f = (260 * np.exp(-t * 10) + 110) * pitch + 25 * np.sin(2 * np.pi * 22 * t) * np.exp(-t * 8)
+    s = np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 11)
+    return s + 0.15 * NOISE[:len(t)] * np.exp(-t * 90)
+
+
+def whirl():
+    """くるくる（回転）."""
+    t = env_t(0.9)
+    f = 600 + 500 * np.sin(2 * np.pi * 9 * t) * t + 400 * t
+    return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.sin(np.pi * t / 0.9) * 0.7
+
+
+def drumroll(dur):
+    """だんだん大きくなる小太鼓のロール."""
+    out = np.zeros(int(dur * SR) + SR // 4)
+    n = int(dur / (SPB / 6))
+    for i in range(n):
+        tt = env_t(0.07)
+        hit = (NOISE[i * 997 % 20000:][:len(tt)] * 0.8 + 0.4 * np.sin(2 * np.pi * 190 * tt)) * np.exp(-tt * 45)
+        g = 0.15 + 0.85 * (i / n) ** 1.6
+        j = int(i * SPB / 6 * SR)
+        out[j:j + len(tt)] += hit * g
+    return out
+
+
+def riser(dur):
+    t = env_t(dur)
+    f = 300 * 2 ** (2 * t / dur)
+    return np.sin(2 * np.pi * np.cumsum(f) / SR) * (t / dur) ** 2 * 0.6
+
+
+def crash():
+    """ばぁ！のシャーン."""
+    t = env_t(2.0)
+    n = NOISE[np.arange(len(t)) % len(NOISE)]
+    n = n - np.concatenate([[0], n[:-1]]) * 0.9
+    return n * np.exp(-t * 2.5) * 0.5 + 0.3 * np.sin(2 * np.pi * 2093 * t) * np.exp(-t * 3)
+
+
+# ---------------------------------------------------------------- 声
+
+VOICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'voices', 'mei_happy.htsvoice')
+VOICE_PITCH = {'purple': 5, 'pink': 9, 'mint': 2}
+VOICE_SPEED = {'purple': 1.0, 'pink': 1.08, 'mint': 0.95}
+_engine = None
+_voice_cache = {}
+
+
+def say(text, who, speed=1.0):
+    global _engine
+    key = (text, who, speed)
+    if key not in _voice_cache:
+        if _engine is None:
+            _engine = HTSEngine(VOICE_FILE.encode())
+        _engine.refresh()
+        _engine.set_speed(speed * VOICE_SPEED[who])
+        _engine.add_half_tone(VOICE_PITCH[who])
+        x = _engine.synthesize(pyopenjtalk.extract_fullcontext(text))
+        idx = np.where(np.abs(x) > 400)[0]
+        x = x[max(0, idx[0] - 200):idx[-1] + 1500] / 32768.0
+        sr0 = _engine.get_sampling_frequency()
+        n = int(len(x) * SR / sr0)
+        x = np.interp(np.arange(n) * sr0 / SR, np.arange(len(x)), x)
+        fade = np.minimum(1, np.minimum(np.arange(n), n - np.arange(n)) / 300)
+        _voice_cache[key] = x * fade
+    return _voice_cache[key]
+
+
+ALL3 = ('purple', 'pink', 'mint')
+
+
+def voice_script():
+    """(時刻, せりふ, だれ, 速さ) のリスト."""
+    L = []
+
+    def at(bar, beat, text, who=('purple',), speed=1.0):
+        for w in who:
+            L.append((bar_t(bar, beat), text, w, speed))
+
+    # イントロ
+    at(1, 2.2, 'ふふっ')
+    at(2, 0, 'いない')
+    at(2, 2, 'いない')
+    at(3, 0, 'ばあーっ！')
+    at(3, 1.6, 'きゃははっ')
+    # ダンス1
+    at(4, 0, 'いくよー！')
+    for b in (5, 7):
+        at(b, 0, 'ぴょん')
+        at(b, 2, 'ぴょん')
+    at(8, 0, 'ゆーら、ゆーら', speed=0.9)
+    at(10, 0, 'ゆーら、ゆーら', speed=0.9)
+    at(11, 1, 'くるりん！')
+    at(11, 3, 'わーい！')
+    # いないいないばぁ 1
+    giggles = ['きゃははっ', 'うふふっ', 'わーい！', 'やったー！']
+    for n in range(4):
+        b = CH1 + n * 2
+        at(b, 0, 'いない')
+        at(b, 2, 'いない')
+        at(b + 1, 0, 'ばあーっ！')
+        at(b + 1, 1.6, giggles[n])
+    # ダンス2
+    for i in range(8):
+        at(A2 + i // 2, (i % 2) * 2, ['あっち！', 'こっち！'][i % 2])
+    at(A2 + 4, 1.5, 'あれれ？')
+    at(A2 + 5, 0, 'ここだよー！')
+    at(A2 + 5, 1.5, 'あれれ？')
+    at(A2 + 6, 0, 'ここだよー！')
+    at(A2 + 7, 1, 'くるりん！')
+    at(A2 + 7, 2.4, 'やっほー！', ('pink',))
+    at(A2 + 7, 3.1, 'やっほー！', ('mint',))
+    # いないいないばぁ 2
+    order = [('pink',), ('mint',), ('purple',), ALL3]
+    for n in range(4):
+        b = CH2 + n * 2
+        at(b, 0, 'いない', ALL3)
+        at(b, 2, 'いない', ALL3)
+        at(b + 1, 0, 'ばあーっ！', order[n])
+        at(b + 1, 1.6, giggles[n], order[n])
+    # おわり
+    at(OUTRO, 0, 'またねー！', ALL3)
+    at(OUTRO + 1, 0, 'ばいばーい！', ALL3)
+    at(OUTRO + 2, 0, 'いない', ALL3)
+    at(OUTRO + 2, 2, 'いない', ALL3)
+    at(OUTRO + 3, 0, 'ばあーっ！', ALL3)
+    at(OUTRO + 3, 2, 'またね！')
+    return L
+
+
+MOUTH_ENV = {}
+
+
+def build_voices(n):
+    """声のトラックと、口パク用のキャラ別音量カーブを作る."""
+    tracks = {w: np.zeros(n) for w in ALL3}
+    for t0, text, who, speed in voice_script():
+        v = say(text, who, speed)
+        i = int(t0 * SR)
+        m = min(len(v), n - i)
+        if m > 0:
+            tracks[who][i:i + m] += v[:m]
+    hop = SR // FPS
+    nf = n // hop
+    for w, tr in tracks.items():
+        rms = np.sqrt(np.mean(tr[:nf * hop].reshape(nf, hop) ** 2, axis=1))
+        MOUTH_ENV[w] = np.clip(rms / 0.06, 0, 1) ** 0.7
+    return sum(tracks.values())
+
+
 CHORDS = {
     'C': [60, 64, 67], 'F': [65, 69, 72], 'G': [62, 67, 71], 'G7': [62, 65, 71], 'Am': [60, 64, 69],
 }
@@ -896,15 +1089,21 @@ def build_audio(path):
             bt += d
 
     def peek_pair(bar, ch, notes, sfx=True):
-        chord_bar(bar, ch)
+        mx.add(bar_t(bar), pad([mtof(m) for m in CHORDS[ch]], 2 * SPB), 0.12)
         chord_bar(bar + 1, ch)
-        drums(bar, light=True)
         drums(bar + 1)
-        melody(bar, [(m, 1) for m in notes], inst=toy_piano, gain=0.3)
+        for bt in (0, 1):
+            mx.add(bar_t(bar, bt), wood(), 0.14)
+        melody(bar, [(m, 1) for m in notes[:2]], inst=toy_piano, gain=0.18)
         if sfx:
-            mx.add(bar_t(bar), whoosh_down(), 0.12)
+            mx.add(bar_t(bar), whoosh_down(), 0.16)
+        # どきどき（ドラムロール + 上がっていく音）
+        mx.add(bar_t(bar, 2), drumroll(2 * SPB), 0.3)
+        mx.add(bar_t(bar, 2), riser(2 * SPB), 0.06)
         # ばぁ！
         t = bar_t(bar + 1)
+        mx.add(t, crash(), 0.22)
+        mx.add(t, kick(), 0.8)
         mx.add(t, pop_sfx(), 0.35)
         for m in CHORDS[ch]:
             mx.add(t, bell(mtof(m + 24)), 0.12)
@@ -938,7 +1137,17 @@ def build_audio(path):
         chord_bar(bar, CH_A[i])
         drums(bar)
         melody(bar, MEL_A[i])
-    mx.add(bar_t(A1 + 7, 1), boing(), 0.25)  # くるっとジャンプ
+    for bt in range(16):  # ぴょんぴょんの着地
+        mx.add(bar_t(A1, bt), squish(1.0 + 0.15 * (bt % 2)), 0.16)
+    for bt in (0, 4, 8):  # ゆらゆら
+        mx.add(bar_t(A1 + 4, bt), whoosh_down(), 0.05)
+    for bar in (A1 + 7, A2 + 7):  # くるっとジャンプ
+        mx.add(bar_t(bar, 0.85), slide_up(), 0.2)
+        mx.add(bar_t(bar, 1.3), whirl(), 0.12)
+        mx.add(bar_t(bar, 3), squish(0.8), 0.32)
+    for n in range(1, 4):  # かくれたまま次の場所へ
+        mx.add(bar_t(CH1 + n * 2, 1), slide_up(), 0.08)
+        mx.add(bar_t(CH1 + n * 2, 3), squish(0.9), 0.14)
 
     # サビ1
     for i, (ch, notes) in enumerate(PEEK):
@@ -952,8 +1161,10 @@ def build_audio(path):
         melody(bar, MEL_A[i], inst=toy_piano, gain=0.26)
         melody(bar, MEL_A[i], inst=marimba, gain=0.12, octave=-12)
     for bt in range(0, 16, 2):  # 横ステップ
-        mx.add(bar_t(A2, bt + 0.2), boing(), 0.08)
-    mx.add(bar_t(A2 + 7, 1), boing(), 0.25)
+        mx.add(bar_t(A2, bt + 0.3), slide_up(), 0.05)
+        mx.add(bar_t(A2, bt + 2), squish(1.1), 0.16)
+    for bt in (2, 6, 10):  # うしろを向く
+        mx.add(bar_t(A2 + 4, bt - 0.5), whirl(), 0.06)
     mx.add(bar_t(A2 + 7, 2.5), pop_sfx(), 0.2)  # おともだち登場
     mx.add(bar_t(A2 + 7, 2.6), pop_sfx(), 0.2)
 
@@ -971,7 +1182,10 @@ def build_audio(path):
     chord_bar(OUTRO + 2, 'G7')
     melody(OUTRO + 2, [(79, 1), (76, 1), (79, 1), (76, 1)], inst=toy_piano, gain=0.3)
     mx.add(bar_t(OUTRO + 2), whoosh_down(), 0.12)
+    mx.add(bar_t(OUTRO + 2, 2), drumroll(2 * SPB), 0.32)
+    mx.add(bar_t(OUTRO + 2, 2), riser(2 * SPB), 0.06)
     t = bar_t(OUTRO + 3)
+    mx.add(t, crash(), 0.25)
     mx.add(t, pop_sfx(), 0.4)
     mx.add(t, pad([mtof(m) for m in CHORDS['C']], 4 * SPB + TAIL), 0.2)
     mx.add(t, bass(mtof(36), 2.5), 0.4)
@@ -979,13 +1193,21 @@ def build_audio(path):
         mx.add(t + i * 0.08, bell(mtof(m), 3.0), 0.1)
 
     x = mx.buf[:int(DURATION * SR)]
+    x = x / (np.max(np.abs(x)) + 1e-9)
+    vo = build_voices(len(x))
+    vo = vo / (np.max(np.abs(vo)) + 1e-9)
+    # 声が出ている間は音楽を少し下げる
+    k = int(0.08 * SR)
+    env = np.convolve(np.abs(vo), np.ones(k) / k, mode='same')
+    env = np.clip(env / 0.08, 0, 1)
+    x = x * (1 - 0.4 * env) * 0.8 + vo * 0.75
     # かんたんなリバーブ（ディレイの重ね合わせ）
     wet = np.zeros_like(x)
     for d, g in [(0.031, 0.25), (0.047, 0.2), (0.071, 0.16), (0.113, 0.12), (0.167, 0.08), (0.241, 0.05)]:
         k = int(d * SR)
         wet[k:] += x[:-k] * g
     x = x + wet * 0.6
-    x = np.tanh(x / (np.max(np.abs(x)) + 1e-9) * 1.2) * 0.85
+    x = np.tanh(x / (np.max(np.abs(x)) + 1e-9) * 1.4) * 0.9
     fade = int(1.2 * SR)
     x[-fade:] *= np.linspace(1, 0, fade)
     pcm = (x * 32767).astype(np.int16)
